@@ -241,8 +241,8 @@ int InstallBootstrap(NSString* jbroot_path)
     ASSERT(spawnBootstrap((char*[]){"/usr/bin/dpkg", "-i", rootfsPrefix(zebraDeb).fileSystemRepresentation, NULL}, nil, nil) == 0);
     ASSERT(spawnBootstrap((char*[]){"/usr/bin/uicache", "-p", "/Applications/Zebra.app", NULL}, nil, nil) == 0);
     
-    ASSERT([[NSString stringWithFormat:@"%d",BOOTSTRAP_VERSION] writeToFile:jbroot(@"/.bootstrapped") atomically:YES encoding:NSUTF8StringEncoding error:nil]);
-    ASSERT([fm copyItemAtPath:jbroot(@"/.bootstrapped") toPath:[jbroot_secondary stringByAppendingPathComponent:@".bootstrapped"] error:nil]);
+    ASSERT([[NSString stringWithFormat:@"%d",BOOTSTRAP_VERSION] writeToFile:jbroot(@"/.thebootstrapped") atomically:YES encoding:NSUTF8StringEncoding error:nil]);
+    ASSERT([fm copyItemAtPath:jbroot(@"/.thebootstrapped") toPath:[jbroot_secondary stringByAppendingPathComponent:@".thebootstrapped"] error:nil]);
     
     STRAPLOG("Status: Bootstrap Installed");
     
@@ -306,6 +306,32 @@ int ReRandomizeBootstrap()
     return 0;
 }
 
+void fixMobileDirectories()
+{
+    NSFileManager* fm = NSFileManager.defaultManager;
+    NSDirectoryEnumerator<NSURL *> *directoryEnumerator = [fm enumeratorAtURL:[NSURL fileURLWithPath:jbroot(@"/var/mobile/") isDirectory:YES] includingPropertiesForKeys:@[NSURLIsDirectoryKey] options:0 errorHandler:nil];
+    
+    for (NSURL *enumURL in directoryEnumerator) {
+        @autoreleasepool {
+            
+            if([enumURL.path containsString:@"/var/mobile/Library/pkgmirror/"]
+               || [enumURL.path hasSuffix:@"/var/mobile/Library/pkgmirror"])
+                continue;
+            
+            struct stat st={0};
+            if(lstat(enumURL.path.fileSystemRepresentation, &st)==0)
+            {
+                if((st.st_mode&S_IFDIR)==0) continue;
+                
+//                SYSLOG("fixMobileDirectory %d:%d %@", st.st_uid, st.st_gid, enumURL); usleep(1000*10);
+                if(st.st_uid == 0) {
+                    chown(enumURL.path.fileSystemRepresentation, 501, st.st_gid==0 ? 501 : st.st_gid);
+                }
+            }
+        }
+    }
+}
+
 int bootstrap()
 {
     ASSERT(getuid()==0);
@@ -331,7 +357,7 @@ int bootstrap()
         
         ASSERT(InstallBootstrap(jbroot_path) == 0);
         
-    } else if(![fm fileExistsAtPath:jbroot(@"/.bootstrapped")]) {
+    } else if(![fm fileExistsAtPath:jbroot(@"/.bootstrapped")] && ![fm fileExistsAtPath:jbroot(@"/.thebootstrapped")]) {
         STRAPLOG("remove unfinished bootstrap %@", jbroot_path);
         
         uint64_t prev_jbrand = jbrand();
@@ -351,9 +377,14 @@ int bootstrap()
     } else {
         STRAPLOG("device is strapped: %@", jbroot_path);
         
+        if([fm fileExistsAtPath:jbroot(@"/.bootstrapped")]) //beta version to public version
+            ASSERT([fm moveItemAtPath:jbroot(@"/.bootstrapped") toPath:jbroot(@"/.thebootstrapped") error:nil]);
+        
         STRAPLOG("Status: Rerandomize jbroot");
         
         ASSERT(ReRandomizeBootstrap() == 0);
+        
+        fixMobileDirectories();
     }
     
     ASSERT(disableRootHideBlacklist()==0);
@@ -439,7 +470,8 @@ bool isBootstrapInstalled()
     if(!find_jbroot())
         return NO;
 
-    if(![NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.bootstrapped")])
+    if(![NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.bootstrapped")]
+       && ![NSFileManager.defaultManager fileExistsAtPath:jbroot(@"/.thebootstrapped")])
         return NO;
     
     return YES;
